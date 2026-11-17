@@ -264,6 +264,24 @@ def mount_test_script(cluster: dict, node: dict | None = None) -> str:
     lines = []
     for source, _, mode in cluster["container"]["mounts"]:
         source = host_path(cluster, source, node)
+        volume_path = docker_volume_path(source)
+        if mode == "ro" and volume_path:
+            volume, below = volume_path
+            image = shlex.quote(cluster["container"]["image"])
+            check_path = shlex.quote("/cache" + (f"/{below}" if below else ""))
+            check = shlex.join([
+                "docker", "run", "--rm", "--pull=never", "--network", "none",
+                "--mount", f"type=volume,source={volume},target=/cache,readonly",
+                "--entrypoint", "/bin/sh", cluster["container"]["image"],
+                "-c", f"test -r {check_path}",
+            ])
+            lines.append(
+                f"if docker image inspect {image} >/dev/null 2>&1; then {check} || "
+                f"printf '%s %s\\n' {mode} {shlex.quote(source)}; else "
+                f"docker volume inspect {shlex.quote(volume)} >/dev/null 2>&1 || "
+                f"printf '%s %s\\n' {mode} {shlex.quote(source)}; fi"
+            )
+            continue
         test = "-w" if mode == "rw" else "-r"
         lines.append(
             f"test {test} {shlex.quote(source)} || printf '%s %s\\n' {mode} {shlex.quote(source)}"

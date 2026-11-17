@@ -455,6 +455,14 @@ def host_path(cluster: dict, template: str, node: dict | None = None) -> str:
     return template.format(**fields)
 
 
+def docker_volume_path(path: str) -> tuple[str, str] | None:
+    """Return a Docker named volume and its relative path for a local volume mountpoint."""
+    match = re.fullmatch(r"/var/lib/docker/volumes/([^/]+)/_data(?:/(.*))?", path)
+    if not match:
+        return None
+    return match.group(1), match.group(2) or ""
+
+
 # GLP steering: the recipe's ``glp`` block (scripts/recipe.py renders it), the steered model
 # name and the GLP file vLLM reads at startup, which every node needs in its own hub cache.
 GLP_FIELDS = {
@@ -603,6 +611,21 @@ def node_glp_problems(cluster: dict, nodes: dict, node: dict) -> list[str]:
         return []
     path = host_path(cluster, source, node)
     result = run_ssh(nodes, node, "sha256sum", path)
+    volume_path = docker_volume_path(path)
+    if result.returncode and volume_path:
+        image = cluster["container"]["image"]
+        available = run_ssh(nodes, node, "docker", "image", "inspect", image)
+        if available.returncode:
+            # The image's absence is reported separately; its tools will verify the
+            # NFS-backed named volume once the image has been built and distributed.
+            return []
+        volume, relative = volume_path
+        container_path = "/cache" + (f"/{relative}" if relative else "")
+        result = run_ssh(
+            nodes, node, "docker", "run", "--rm", "--pull=never", "--network", "none",
+            "--mount", f"type=volume,source={volume},target=/cache,readonly",
+            "--entrypoint", "sha256sum", image, container_path,
+        )
     if result.returncode == 255:
         return [f"{node['name']}: cannot check the GLP steering file: {result.stderr.strip()}"]
     fix = f"run {cluster_recipe.glp_download(cluster)} (docs/setup.md, section 5)"

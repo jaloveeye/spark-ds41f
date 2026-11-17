@@ -478,7 +478,10 @@ differ between the head and workers. The JIT cache mount is `{checkout}/cache`,
 so it follows the checkout wherever you clone it. A start refuses a read-write
 mount whose source a node cannot write
 (`rw mount source is unavailable`); a mount you add that lives in the checkout
-should name `{checkout}` too.
+should name `{checkout}` too. If a read-only cache is a Docker-managed NFS volume,
+set `model_cache` to its host mountpoint, such as
+`/var/lib/docker/volumes/dsv41-hf/_data`; mount and file checks use the Docker
+volume when the unprivileged SSH user cannot traverse Docker's volume directory.
 
 `bin/spark --cluster-config <profile> cluster sync --apply` moves every node's checkout to the head's
 commit, copies the head's node map to the others, and copies the profile's image from the head to
