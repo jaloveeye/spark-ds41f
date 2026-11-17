@@ -4,12 +4,12 @@
   "model": "v41-flash-1017",
   "models": {
     "v41-flash": {
-      "snapshot": "{home}/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4.1-Flash/snapshots/dba1be0a40aa45a94ad051997016db3960a90277",
-      "blobs": "{home}/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4.1-Flash/blobs",
+      "snapshot": "{model_cache}/hub/models--deepseek-ai--DeepSeek-V4.1-Flash/snapshots/dba1be0a40aa45a94ad051997016db3960a90277",
+      "blobs": "{model_cache}/hub/models--deepseek-ai--DeepSeek-V4.1-Flash/blobs",
       "notes": "DeepSeek-V4.1-Flash, revision dba1be0a (2026-09-10)."
     },
     "v41-flash-1017": {
-      "hub": "{home}/.cache/huggingface/hub",
+      "hub": "{model_cache}/hub",
       "snapshot": "models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/1bae0e1088993b9b82de08f59de5be5a34e42170",
       "notes": "DeepSeek-V4.1-Flash-1017, revision 1bae0e10 (2026-10-17): new weights; config, tokenizer and tensor layout unchanged. Its blobs link on into the hub's shared store, so the hub is mounted."
     }
@@ -242,7 +242,6 @@
         "NCCL_GIN_ENABLE": "0",
         "NCCL_IB_ADDR_FAMILY": "AF_INET",
         "NCCL_IB_DISABLE": "0",
-        "NCCL_IB_GID_INDEX": "3",
         "NCCL_IB_MERGE_NICS": "1",
         "NCCL_IB_ROCE_VERSION_NUM": "2",
         "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
@@ -343,7 +342,6 @@
         "NCCL_DEBUG_SUBSYS": "INIT",
         "NCCL_IB_ADDR_FAMILY": "AF_INET",
         "NCCL_IB_DISABLE": "0",
-        "NCCL_IB_GID_INDEX": "3",
         "NCCL_IB_MERGE_NICS": "1",
         "NCCL_IB_ROCE_VERSION_NUM": "2",
         "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
