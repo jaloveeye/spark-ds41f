@@ -1504,5 +1504,27 @@ class QualifiedRecipeProblemsTest(unittest.TestCase):
         self.assertTrue(any("serve_args differ from qualified profile" in w for w in warnings))
 
 
+class PerNodeSiteSettingsTest(unittest.TestCase):
+    def test_node_ssh_user_overrides_site_default_for_all_targets(self) -> None:
+        nodes = {"ssh_user": "imotors"}
+        node = {"name": "10.10.10.2", "ssh_user": "herace",
+                "transfer_host": "10.10.10.2-internal"}
+        self.assertEqual(spark.ssh_target(nodes, node), "herace@10.10.10.2")
+        self.assertEqual(spark.transfer_target(nodes, node), "herace@10.10.10.2-internal")
+
+    def test_node_home_and_model_cache_expand_without_changing_defaults(self) -> None:
+        cluster = {"host": {"home": "/home/herace"},
+                   "deployment": {"path": "/var/tmp/spark-ds41f"}}
+        node = {"name": "worker", "home": "/home/imotors",
+                "model_cache": "/var/lib/docker/volumes/dsv41-hf/_data"}
+        self.assertEqual(spark.host_path(cluster, "{home}/.cache", node), "/home/imotors/.cache")
+        self.assertEqual(spark.host_path(cluster, "{model_cache}/hub", node),
+                         "/var/lib/docker/volumes/dsv41-hf/_data/hub")
+        self.assertEqual(spark.host_path(cluster, "{checkout}/cache", node),
+                         "/var/tmp/spark-ds41f/cache")
+        self.assertEqual(spark.host_path(cluster, "{model_cache}/hub"),
+                         "/home/herace/.cache/huggingface/hub")
+
+
 if __name__ == "__main__":
     unittest.main()

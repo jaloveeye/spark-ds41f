@@ -1141,6 +1141,8 @@ def docker_error_detail(node_name: str, stderr: str) -> str:
 
 def ssh_resolution_problem(nodes: dict, node: dict) -> str | None:
     """Return an error if the node's SSH target resolves via neither SSH config nor DNS."""
+    if node.get("head"):
+        return None
     target = ssh_target(nodes, node)
     host = node["name"]
     proxy = False
@@ -1354,7 +1356,7 @@ def live_doctor(cluster: dict, nodes: dict) -> list[str]:
             )
         )
         problems.extend(
-            mount_problems(node["name"], expected_binds(cluster), inspection["HostConfig"]["Binds"])
+            mount_problems(node["name"], expected_binds(cluster, node), inspection["HostConfig"]["Binds"])
         )
         if configured_cpuset(cluster) is not None:
             capacities = cpu_capacities(run_ssh(
@@ -1653,7 +1655,7 @@ def collective_probe_command(cluster: dict, nodes: dict, node: dict, port: int) 
                "--entrypoint=/usr/bin/timeout"]
     for key, value in sorted(env.items()):
         command.extend(["--env", f"{key}={value}"])
-    command.extend(["--volume", f"{repository_path(cluster)}/scripts/probe_collectives.py:/probe.py:ro",
+    command.extend(["--volume", f"{repository_path(cluster, node)}/scripts/probe_collectives.py:/probe.py:ro",
                     cluster["container"]["image"], "--signal=TERM", "--kill-after=10s", "600s",
                     "python3", "/probe.py", "--rank", str(node["rank"]),
                     "--world-size", str(len(nodes["nodes"])), "--master-addr",
@@ -1712,16 +1714,13 @@ def weight_fragmentation_findings(cluster: dict, nodes: dict, commands: bool = F
     )
     if source is None:
         return [Warn("cannot check weight fragmentation: no model mount")]
-    root = host_path(cluster, source)
     code = (ROOT / "scripts/weight_fragmentation.py").read_text()
 
     def inspect(node: dict) -> dict:
         try:
-            result = subprocess.run(
-                ["ssh", *ssh_options(), ssh_target(nodes, node),
-                 shlex.join(["python3", "-c", code, root])],
-                capture_output=True, text=True, timeout=30, check=True,
-            )
+            result = run_ssh(nodes, node, "python3", "-c", code, host_path(cluster, source, node))
+            if result.returncode:
+                return {"error": "command failed"}
             return json.loads(result.stdout)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             # CalledProcessError/TimeoutExpired include the entire SSH script.

@@ -783,7 +783,7 @@ class GLPTest(unittest.TestCase):
         self.assertIn([recipe.glp_file(cluster), "/glp/vector.gguf", "ro"], cluster["container"]["mounts"])
         self.assertEqual(
             recipe.glp_file(cluster),
-            "{home}/.cache/huggingface/hub/models--msuiche--DeepSeek-V4.1-Flash-1017-abliterated-cyber-GLP-39-L1-39-a0.75"
+            "{model_cache}/hub/models--msuiche--DeepSeek-V4.1-Flash-1017-abliterated-cyber-GLP-39-L1-39-a0.75"
             "/snapshots/2715ffd51f59899115853e1118db080536966c44/glp.deepseek-v41-flash-1017-GLP-39-L1-39-a0.75.gguf")
         self.assertEqual(
             recipe.glp_download(cluster),

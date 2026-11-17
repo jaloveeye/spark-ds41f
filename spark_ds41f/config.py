@@ -178,8 +178,11 @@ def configuration(
         if branch is not None:
             cluster["deployment"]["branch"] = branch
     ssh_user = nodes.get("ssh_user")
-    if cluster.get("host", {}).get("home") == "/home/swank" and ssh_user not in (None, "", "swank", "u"):
-        cluster["host"]["home"] = f"/home/{ssh_user}"
+    head = next((node for node in nodes.get("nodes", []) if node.get("head")), None)
+    if head and head.get("home"):
+        cluster["host"]["home"] = head["home"]
+    elif cluster.get("host", {}).get("home") == "/home/swank" and ssh_user not in (None, "", "swank", "u"):
+        cluster["host"]["home"] = f"/home/{(head or {}).get('ssh_user', ssh_user)}"
     if (is_recipe_config or (is_overlay_config and not overlay_sets_master)) and cluster.get("distributed", {}).get("master_addr") == "10.0.1.71":
         heads = [n for n in nodes.get("nodes", []) if n.get("head") and (n.get("control_ip") or n.get("management_ip"))]
         if len(heads) == 1:
@@ -241,10 +244,10 @@ def expected_command(cluster: dict, node: dict) -> list[str]:
     return command
 
 
-def expected_binds(cluster: dict) -> list[str]:
+def expected_binds(cluster: dict, node: dict | None = None) -> list[str]:
     """The --volume values; docker inspect keeps them verbatim in HostConfig.Binds."""
     return [
-        f"{host_path(cluster, source)}:{destination}:{mode}"
+        f"{host_path(cluster, source, node)}:{destination}:{mode}"
         for source, destination, mode in cluster["container"]["mounts"]
     ]
 
@@ -347,7 +350,7 @@ def rendered_docker_command(cluster: dict, node: dict) -> list[str]:
     command.extend(container["docker_run_args"])
     for key, value in sorted(expected_environment(cluster, node).items()):
         command.extend(["--env", f"{key}={value}"])
-    for bind in expected_binds(cluster):
+    for bind in expected_binds(cluster, node):
         command.extend(["--volume", bind])
     command.append(container["image"])
     command.extend(expected_command(cluster, node))
@@ -355,7 +358,7 @@ def rendered_docker_command(cluster: dict, node: dict) -> list[str]:
 
 
 def ssh_target(nodes: dict, node: dict) -> str:
-    return f"{nodes['ssh_user']}@{node['name']}"
+    return f"{node.get('ssh_user', nodes['ssh_user'])}@{node['name']}"
 
 
 def transfer_target(nodes: dict, node: dict) -> str:
@@ -363,7 +366,7 @@ def transfer_target(nodes: dict, node: dict) -> str:
     node's name on a CX7 link to the head, such as ``dgxN-internal``, so large copies
     stay off the LAN switch) when it names one, else the node's ``name``."""
     host = node.get("transfer_host") or node["name"]
-    return f"{nodes['ssh_user']}@{host}"
+    return f"{node.get('ssh_user', nodes['ssh_user'])}@{host}"
 
 
 SSH_CONTROL_DIR = Path(tempfile.gettempdir()) / f"spark-ssh-{os.getuid()}"
@@ -385,14 +388,16 @@ def ssh_options() -> list[str]:
     ]
 
 
+def node_command(nodes: dict, node: dict, *command: str) -> list[str]:
+    """Render one node command, running the head locally and SSHing to its workers."""
+    if node.get("head"):
+        return list(command)
+    return ["ssh", *ssh_options(), ssh_target(nodes, node), shlex.join(command)]
+
+
 def run_ssh(nodes: dict, node: dict, *command: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [
-            "ssh",
-            *ssh_options(),
-            ssh_target(nodes, node),
-            shlex.join(command),
-        ],
+        node_command(nodes, node, *command),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -406,10 +411,20 @@ def remote_shell(nodes: dict, node: dict, script: str) -> subprocess.CompletedPr
 
 def write_remote_file(nodes: dict, node: dict, path: str, text: str) -> subprocess.CompletedProcess[str]:
     """Replace a file on a node atomically with the given text."""
+    if node.get("head"):
+        target = Path(path)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name(f"{target.name}.tmp.{os.getpid()}")
+            temporary.write_text(text, encoding="utf-8")
+            os.replace(temporary, target)
+        except OSError as error:
+            return subprocess.CompletedProcess([], 1, "", str(error))
+        return subprocess.CompletedProcess([], 0, "", "")
     quoted = shlex.quote(path)
     script = f"cat > {quoted}.tmp && mv {quoted}.tmp {quoted}"
     return subprocess.run(
-        ["ssh", *ssh_options(), ssh_target(nodes, node), shlex.join(["bash", "-c", script])],
+        node_command(nodes, node, "bash", "-c", script),
         input=text,
         text=True,
         stdout=subprocess.PIPE,
@@ -418,20 +433,25 @@ def write_remote_file(nodes: dict, node: dict, path: str, text: str) -> subproce
     )
 
 
-def repository_path(cluster: dict) -> str:
-    path = cluster["deployment"]["path"]
+def repository_path(cluster: dict, node: dict | None = None) -> str:
+    node = node or {}
+    path = node.get("repository_path", cluster["deployment"]["path"])
     if "{checkout}" in path:
         raise SystemExit("deployment.path is the checkout itself: it may name {home}, not {checkout}")
-    return path.format(home=cluster["host"]["home"])
+    return path.format(home=node.get("home", cluster["host"]["home"]))
 
 
-def host_path(cluster: dict, template: str) -> str:
-    """A node path from the profile: ``{home}`` is ``host.home`` and ``{checkout}`` the
+def host_path(cluster: dict, template: str, node: dict | None = None) -> str:
+    """A node path from the profile: ``{home}`` is that node's home (or ``host.home``),
+    ``{model_cache}`` is its model cache (or the conventional Hugging Face path), and ``{checkout}`` the
     deployment checkout (``deployment.path``), so what a site keeps in its checkout, such
     as the JIT cache, follows the checkout wherever the site clones it."""
-    fields = {"home": cluster["host"]["home"]}
+    node = node or {}
+    home = node.get("home", cluster["host"]["home"])
+    fields = {"home": home,
+              "model_cache": node.get("model_cache", f"{home}/.cache/huggingface")}
     if "{checkout}" in template:
-        fields["checkout"] = repository_path(cluster)
+        fields["checkout"] = repository_path(cluster, node)
     return template.format(**fields)
 
 
@@ -581,7 +601,7 @@ def node_glp_problems(cluster: dict, nodes: dict, node: dict) -> list[str]:
     source = cluster_recipe.glp_file(cluster)
     if source is None:
         return []
-    path = host_path(cluster, source)
+    path = host_path(cluster, source, node)
     result = run_ssh(nodes, node, "sha256sum", path)
     if result.returncode == 255:
         return [f"{node['name']}: cannot check the GLP steering file: {result.stderr.strip()}"]

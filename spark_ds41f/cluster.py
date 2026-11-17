@@ -189,13 +189,13 @@ def normalized_repository_url(url: str) -> str:
     return FORMER_REPOSITORY_URLS.get(url, url)
 
 
-def remote_status_command(cluster: dict) -> str:
-    repo = Path(repository_path(cluster))
+def remote_status_command(cluster: dict, node: dict | None = None) -> str:
+    repo = Path(repository_path(cluster, node))
     pathspecs = ["."]
     for source, _, mode in cluster["container"]["mounts"]:
         if mode != "rw":
             continue
-        source_path = Path(host_path(cluster, source))
+        source_path = Path(host_path(cluster, source, node))
         try:
             relative = source_path.relative_to(repo)
         except ValueError:
@@ -209,13 +209,13 @@ def remote_status_command(cluster: dict) -> str:
 def remote_repository_state(
     cluster: dict, nodes: dict, node: dict
 ) -> tuple[str, str, str]:
-    path = shlex.quote(repository_path(cluster))
+    path = shlex.quote(repository_path(cluster, node))
     result = remote_shell(
         nodes,
         node,
         f"cd {path} && printf '%s\\n' \"$(git rev-parse HEAD)\" && "
         "git remote get-url origin && "
-        f"{remote_status_command(cluster)}",
+        f"{remote_status_command(cluster, node)}",
     )
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip()
@@ -259,11 +259,11 @@ def remote_runtime_problems(
         return [problem for node_problems in findings for problem in node_problems]
 
 
-def mount_test_script(cluster: dict) -> str:
+def mount_test_script(cluster: dict, node: dict | None = None) -> str:
     """One remote script testing every mount source (writable for rw, readable for ro)."""
     lines = []
     for source, _, mode in cluster["container"]["mounts"]:
-        source = host_path(cluster, source)
+        source = host_path(cluster, source, node)
         test = "-w" if mode == "rw" else "-r"
         lines.append(
             f"test {test} {shlex.quote(source)} || printf '%s %s\\n' {mode} {shlex.quote(source)}"
@@ -281,7 +281,7 @@ def node_runtime_problems(
     cluster_config: str,
 ) -> list[str]:
     problems: list[str] = []
-    repo = repository_path(cluster)
+    repo = repository_path(cluster, node)
     name = cluster["container"]["name"]
     try:
         remote_revision, remote_origin, dirty = remote_repository_state(cluster, nodes, node)
@@ -331,7 +331,7 @@ def node_runtime_problems(
         if doctor.returncode:
             detail = doctor.stdout.strip() or doctor.stderr.strip()
             problems.append(f"{node['name']}: repository doctor failed: {detail}")
-    mounts = run_ssh(nodes, node, "sh", "-c", mount_test_script(cluster))
+    mounts = run_ssh(nodes, node, "sh", "-c", mount_test_script(cluster, node))
     for line in mounts.stdout.splitlines():
         mode, _, source = line.partition(" ")
         problems.append(f"{node['name']}: {mode} mount source is unavailable: {source}")
@@ -456,8 +456,8 @@ def command_cluster_sync(args: argparse.Namespace) -> int:
         # merged, or origin/main): fetch before resolving it.
         checked(["git", "fetch", "--quiet", "--prune", "origin"], cwd=ROOT)
     revision = repository_revision(args.revision or "HEAD")
-    path = repository_path(cluster)
     for node in nodes["nodes"]:
+        path = repository_path(cluster, node)
         print(f"{node['name']}: fetch origin and detach {path} at {revision}")
     if not args.apply:
         if revision == repository_revision():
@@ -502,6 +502,7 @@ def command_cluster_sync(args: argparse.Namespace) -> int:
     previous: dict[str, str] = {}
     committed = profile_committed(revision, config_relative)
     for node in nodes["nodes"]:
+        path = repository_path(cluster, node)
         try:
             old_revision, remote_origin, dirty = remote_repository_state(
                 cluster, nodes, node
@@ -530,12 +531,13 @@ def command_cluster_sync(args: argparse.Namespace) -> int:
         if (ROOT / optional).is_file():
             site_paths.add(optional)
     site_texts = {relative: repository_config_path(relative).read_text(encoding="utf-8") for relative in site_paths}
-    quoted_path = shlex.quote(path)
-    fetch_script = (
-        f"cd {quoted_path} && git fetch --quiet --prune origin && "
-        f"git cat-file -e {shlex.quote(revision)}^{{commit}}"
-    )
     for node in nodes["nodes"]:
+        path = repository_path(cluster, node)
+        quoted_path = shlex.quote(path)
+        fetch_script = (
+            f"cd {quoted_path} && git fetch --quiet --prune origin && "
+            f"git cat-file -e {shlex.quote(revision)}^{{commit}}"
+        )
         result = remote_shell(nodes, node, fetch_script)
         if result.returncode:
             detail = result.stderr.strip() or result.stdout.strip()
@@ -544,6 +546,8 @@ def command_cluster_sync(args: argparse.Namespace) -> int:
     changed: list[dict] = []
     try:
         for node in nodes["nodes"]:
+            path = repository_path(cluster, node)
+            quoted_path = shlex.quote(path)
             checkout = remote_shell(
                 nodes,
                 node,
@@ -573,6 +577,8 @@ def command_cluster_sync(args: argparse.Namespace) -> int:
         print(f"ERROR: {error}", file=sys.stderr)
         print("rolling changed checkouts back", file=sys.stderr)
         for node in reversed(changed):
+            path = repository_path(cluster, node)
+            quoted_path = shlex.quote(path)
             remote_shell(
                 nodes,
                 node,
@@ -796,7 +802,7 @@ def start_memguard(
     *,
     prelaunch: bool = False,
 ) -> None:
-    script = f"{repository_path(cluster)}/scripts/memguard-start.sh"
+    script = f"{repository_path(cluster, node)}/scripts/memguard-start.sh"
     arguments = [script, *memguard_settings(cluster, phase, "prelaunch" if prelaunch else "running")]
     result = run_ssh(nodes, node, *arguments)
     if result.returncode:
@@ -1261,19 +1267,19 @@ CACHE_SUMMARY_AWK = (
 CACHE_SUMMARY = f"find . -type f -printf '%s %T@\\n' 2>/dev/null | awk {shlex.quote(CACHE_SUMMARY_AWK)}"
 
 
-def cache_mount_source(cluster: dict) -> str:
+def cache_mount_source(cluster: dict, node: dict | None = None) -> str:
     """The node directory the profile mounts at the container's cache mount."""
     sources = [str(source) for source, target, _ in cluster["container"]["mounts"]
                if str(target).rstrip("/") == CACHE_MOUNT]
     if len(sources) != 1:
         raise ValueError(f"the profile mounts {len(sources)} directories at {CACHE_MOUNT}, not one")
-    source = PurePosixPath(host_path(cluster, sources[0]))
+    source = PurePosixPath(host_path(cluster, sources[0], node))
     if not source.is_absolute() or ".." in source.parts or len(source.parts) < 2:
         raise ValueError(f"the {CACHE_MOUNT} mount's source {str(source)!r} is not a directory of the node")
     return str(source)
 
 
-def cache_host_directory(cluster: dict, container_path: str) -> str:
+def cache_host_directory(cluster: dict, container_path: str, node: dict | None = None) -> str:
     """The node directory behind a container path strictly inside the cache mount.
 
     Every path `cache clear` empties passes through here. The path must be absolute, name
@@ -1293,7 +1299,7 @@ def cache_host_directory(cluster: dict, container_path: str) -> str:
         other = PurePosixPath(str(target))
         if other != PurePosixPath(CACHE_MOUNT) and (other == path or other in path.parents):
             raise ValueError(f"{container_path!r} is under another mount, {target}")
-    return str(PurePosixPath(cache_mount_source(cluster)) / below)
+    return str(PurePosixPath(cache_mount_source(cluster, node)) / below)
 
 
 def profile_caches(cluster: dict, caches: dict[str, tuple[str, ...]]) -> tuple[list[dict], list[str], list[str]]:

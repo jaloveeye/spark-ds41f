@@ -444,7 +444,7 @@ Two files describe your site and stay out of git:
   messages and must resolve via `~/.ssh/config` or DNS/hosts; if an earlier node
   map set `ssh_host`, either rename nodes to their SSH targets or add SSH
   aliases, because `name` is now the SSH target),
-  its rank (the head is rank 0), management IP, `ssh_user`, and `roce_peer_hcas`:
+  its rank (the head is rank 0), management IP, optional per-node `ssh_user`, and `roce_peer_hcas`:
   for each peer rank, the local RoCE devices cabled to it (`rdma link` shows them).
   `sparknet topology discover` writes it. An optional `transfer_host` field per
   node overrides the host used only for bulk copies (image distribution and the
@@ -452,7 +452,9 @@ Two files describe your site and stay out of git:
   the node's name on a CX7 link cabled to the head (the `dgxN-internal` names in
   `/etc/hosts`) keeps large copies off a struggling LAN switch; the head's
   `known_hosts` must know that name. A node the head is not cabled to keeps its
-  LAN route.
+  LAN route. The map-level `ssh_user` remains the default; a node's `ssh_user`
+  overrides it. The node marked `head` is operated on locally, so the head does
+  not need to SSH to itself.
 - **The shape.** Name your cabling once: `bin/spark site shape tp3-triangle
   --apply` (or `tp3-triangle-4k`, `tp4-ring`) writes the git-ignored
   `config/site.json`, which `cluster sync` copies to every node. Every command
@@ -467,10 +469,14 @@ Two files describe your site and stay out of git:
   inside it, an outgoing connection can take the port and the head fails to
   start.
 
-Node paths in a profile take two placeholders: `{home}` is `host.home`, and
-`{checkout}` is `deployment.path`, which itself names only `{home}`. The JIT
-cache mount is `{checkout}/cache`, so it follows the checkout wherever you
-clone it. A start refuses a read-write mount whose source a node cannot write
+Node paths in a profile take `{home}`, `{model_cache}` and `{checkout}`. They
+resolve per node from its optional `home`, `model_cache` and `repository_path`
+fields, falling back to `host.home`, `{home}/.cache/huggingface`, and
+`deployment.path`. `deployment.path` itself may name only `{home}`. Set these
+per-node fields when Unix users, the Hugging Face cache, or the checkout path
+differ between the head and workers. The JIT cache mount is `{checkout}/cache`,
+so it follows the checkout wherever you clone it. A start refuses a read-write
+mount whose source a node cannot write
 (`rw mount source is unavailable`); a mount you add that lives in the checkout
 should name `{checkout}` too.
 

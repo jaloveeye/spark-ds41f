@@ -35,7 +35,7 @@ VLLM_RING_ENV = {
     "VLLM_DISABLE_PYNCCL": "0",
 }
 # Node-map fields for this repository's access to a node, not the fabric.
-SITE_FIELDS = ("transfer_host", "control_ip")
+SITE_FIELDS = ("transfer_host", "control_ip", "ssh_user", "home", "model_cache", "repository_path")
 GID_PINS = ("NCCL_IB_GID_INDEX", "SPARKNET_ROCE_GID_INDEX")
 
 
@@ -306,8 +306,11 @@ def candidate(base: dict, nodes: dict, nodes_path: str) -> dict:
     result["deployment"]["launch_enabled"] = False
     result["deployment"].pop("branch", None)
     ssh_user = nodes.get("ssh_user")
-    if result.get("host", {}).get("home") == "/home/swank" and ssh_user not in (None, "", "swank", "u"):
-        result["host"]["home"] = f"/home/{ssh_user}"
+    head = next((node for node in nodes["nodes"] if node.get("head")), None)
+    if head and head.get("home"):
+        result["host"]["home"] = head["home"]
+    elif result.get("host", {}).get("home") == "/home/swank" and ssh_user not in (None, "", "swank", "u"):
+        result["host"]["home"] = f"/home/{(head or {}).get('ssh_user', ssh_user)}"
     result["distributed"]["master_addr"] = next(control_ip(n) for n in nodes["nodes"] if n.get("head"))
     for flag in ("--tensor-parallel-size", "--nnodes"):
         set_argument(result, flag, str(count))

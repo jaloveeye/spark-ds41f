@@ -897,11 +897,7 @@ class MemoryWatch:
         self.processes: list[subprocess.Popen] = []
         for node in nodes["nodes"]:
             process = subprocess.Popen(
-                [
-                    "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                    "-o", "ServerAliveInterval=5", ssh_target(nodes, node),
-                    shlex.join(["bash", "-c", self.SCRIPT]),
-                ],
+                node_command(nodes, node, "bash", "-c", self.SCRIPT),
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -2078,7 +2074,7 @@ def bench_identity(cluster: dict, nodes: dict, config_name: str, config_path: Pa
     }
     for node in nodes["nodes"]:
         container = run_ssh(nodes, node, "docker", "inspect", "--format", "{{.Image}} {{.State.StartedAt}}", name)
-        checkout = run_ssh(nodes, node, "git", "-C", repository_path(cluster), "rev-parse", "HEAD")
+        checkout = run_ssh(nodes, node, "git", "-C", repository_path(cluster, node), "rev-parse", "HEAD")
         image_id, _, started_at = (container.stdout.strip() if container.returncode == 0 else "").partition(" ")
         identity["nodes"][node["name"]] = {
             "image_id": image_id or None,

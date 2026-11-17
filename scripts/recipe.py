@@ -50,7 +50,7 @@ MODEL_MOUNTS = ("/models", "/blobs", "/hub")
 # cache on each node that ``hf download`` fills.
 GLP_TARGET = "/glp/vector.gguf"
 STEER_PATH, STEER_MODEL = "WEIGHTLESS_STEER_PATH", "WEIGHTLESS_STEER_MODEL"
-GLP_HUB = "{home}/.cache/huggingface/hub"
+GLP_HUB = "{model_cache}/hub"
 GLP_KEYS = ("served_model_name", "repo", "revision", "file", "sha256")
 SIZING_KEYS = ("max_model_len", "max_num_seqs", "max_num_batched_tokens", "kv_cache_memory_bytes",
                "prefix_cache_retention_interval")

@@ -299,11 +299,10 @@ def published_problems() -> list[str]:
     if subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", "HEAD", "origin/main"]).returncode:
         problems.append(f"deployment commit {head[:8]} is not on origin/main")
     cluster, nodes, _ = production_configuration()
-    repo = spark.repository_path(cluster)
     for node in nodes["nodes"]:
         if node["head"]:
             continue
-        theirs = spark.run_ssh(nodes, node, "git", "-C", repo, "rev-parse", "HEAD").stdout.strip()
+        theirs = spark.run_ssh(nodes, node, "git", "-C", spark.repository_path(cluster, node), "rev-parse", "HEAD").stdout.strip()
         if theirs != head:
             problems.append(f"{node['name']} checkout {theirs[:8]} differs from {head[:8]}")
     return problems
@@ -349,7 +348,7 @@ BOOT_PROBE = (
 )
 
 
-def jit_cache_dirs(cluster: dict) -> list[str]:
+def jit_cache_dirs(cluster: dict, node: dict | None = None) -> list[str]:
     """The host directories of the container's kernel caches: each cache variable's path in
     the container mapped back through the container's mounts to a node path."""
     environment, mounts, out = cluster.get("environment", {}), cluster.get("container", {}).get("mounts", []), []
@@ -360,7 +359,7 @@ def jit_cache_dirs(cluster: dict) -> list[str]:
         for mount in mounts:
             source, target = str(mount[0]), str(mount[1]).rstrip("/")
             if inside == target or inside.startswith(target + "/"):
-                out.append(spark.host_path(cluster, source.rstrip("/") + inside[len(target):]))
+                out.append(spark.host_path(cluster, source.rstrip("/") + inside[len(target):], node))
                 break
     return list(dict.fromkeys(out))
 
@@ -384,16 +383,17 @@ def probe_boot(config: str, since: float) -> dict:
     left out; the probe never fails a boot."""
     try:
         cluster = spark.read_cluster(config)
-        dirs, image = jit_cache_dirs(cluster), cluster["container"]["image"]
+        image = cluster["container"]["image"]
         nodes = nodes_config()
     except Exception:  # noqa: BLE001 - an unreadable profile or node map: no record
         return {}
 
     def one(node: dict) -> tuple[str, dict | None]:
         try:
+            dirs = jit_cache_dirs(cluster, node)
             done = subprocess.run(
-                ["ssh", *spark.ssh_options(), spark.ssh_target(nodes, node),
-                 shlex.join(["bash", "-c", BOOT_PROBE, "probe", f"{since:.0f}", image, *dirs])],
+                spark.node_command(nodes, node, "bash", "-c", BOOT_PROBE,
+                                   "probe", f"{since:.0f}", image, *dirs),
                 capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
         except Exception:  # noqa: BLE001 - a record only; it never fails the boot
             return str(node.get("name")), None
@@ -534,8 +534,7 @@ def start_memory_samplers(prefix: Path) -> list[tuple[str, Path, subprocess.Pope
         path = prefix.with_name(f"{prefix.name}-{node['name']}.txt")
         with path.open("w") as handle:
             process = subprocess.Popen(
-                ["ssh", *spark.ssh_options(), spark.ssh_target(nodes, node),
-                 shlex.join(["bash", "-c", STARTUP_MEMORY_SAMPLER])],
+                spark.node_command(nodes, node, "bash", "-c", STARTUP_MEMORY_SAMPLER),
                 stdout=handle, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
         samplers.append((node["name"], path, process))
     return samplers
@@ -821,10 +820,10 @@ class Telemetry:
                                   "--format=csv,noheader,nounits", "-lms", "1000"])
             for node in nodes["nodes"]:
                 self.processes[node["name"]] = subprocess.Popen(
-                    ["ssh", *spark.ssh_options(), spark.ssh_target(nodes, node), command],
+                    spark.node_command(nodes, node, "bash", "-c", command),
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True)
                 sampler = subprocess.Popen(
-                    ["ssh", *spark.ssh_options(), spark.ssh_target(nodes, node), "python3", "-", container, "21600"],
+                    spark.node_command(nodes, node, "python3", "-", container, "21600"),
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.PIPE, text=True)
                 sampler.stdin.write(THREAD_SAMPLER)
                 sampler.stdin.close()
@@ -1364,7 +1363,7 @@ def agentx_target(config: str) -> dict:
     if cluster.get("host", {}).get("home") == "/home/swank" and ssh_user not in (None, "", "swank", "u"):
         cluster["host"]["home"] = f"/home/{ssh_user}"
     head = next(node for node in nodes["nodes"] if node["head"])
-    snapshot = spark.cluster_recipe.model_snapshot(cluster).format(home=cluster["host"]["home"])
+    snapshot = spark.host_path(cluster, spark.cluster_recipe.model_snapshot(cluster), head)
     found = re.search(r"(.*)/models--([^/]+?)--([^/]+)/snapshots/([0-9a-f]{40})/?$", snapshot)
     if not found:
         raise SystemExit(f"{config}: the model snapshot {snapshot} is not a hub cache snapshot")
@@ -1674,7 +1673,6 @@ def profile_workload(step: dict) -> None:
     container_dir = profiler_dir(step["config"])
     host_relative = container_dir.replace("/cache/", "cache/", 1)
     nodes = nodes_config()
-    repo = spark.repository_path(production_configuration()[0])
     out = ROOT / step["out"]
     out.mkdir(parents=True, exist_ok=True)
     workload = step["workload"]
@@ -1697,6 +1695,7 @@ def profile_workload(step: dict) -> None:
         raise RuntimeError(f"profile {step['label']} {workload} failed with exit {code}; see {out / (workload + '.json')}")
 
     def trace_bytes(node: dict) -> int:
+        repo = spark.repository_path(production_configuration()[0], node)
         result = spark.run_ssh(nodes, node, "sh", "-c",
                                 f"cat {repo}/{host_relative}/*rank*.json.gz 2>/dev/null | wc -c")
         return int(result.stdout.strip() or 0)
@@ -1886,7 +1885,7 @@ def fabric_command(cluster: dict, nodes: dict, node: dict, script: str, args: li
     arm's mounts and ``environment`` over its variables, running ``script`` with the probe's
     rank arguments followed by ``args``."""
     base = spark.collective_probe_command(cluster, nodes, node, FABRIC_PORT)
-    repo = spark.repository_path(cluster)
+    repo = spark.repository_path(cluster, node)
     start = base.index("python3")
     head = [f"{repo}/{script}:/fabric.py:ro" if arg == f"{repo}/scripts/probe_collectives.py:/probe.py:ro"
             else arg for arg in base[:start]]
@@ -1899,7 +1898,7 @@ def fabric_command(cluster: dict, nodes: dict, node: dict, script: str, args: li
         kept.append(arg)
     image = kept.index(cluster["container"]["image"])
     overrides = [value for key, item in sorted(environment.items()) for value in ("--env", f"{key}={item}")]
-    mounts = [value for bind in spark.expected_binds(cluster) for value in ("--volume", bind)]
+    mounts = [value for bind in spark.expected_binds(cluster, node) for value in ("--volume", bind)]
     return (kept[:image] + overrides + mounts + kept[image:]
             + ["python3", "/fabric.py", *base[start + 2:], *args])
 
@@ -1924,7 +1923,6 @@ def run_image(step: dict) -> str | None:
     """Build and distribute an image step's image; None on success, else the failure."""
     cluster, nodes, _ = spark.configuration(argparse.Namespace(cluster_config=step["config"]))
     image = cluster["container"]["image"]
-    repo = spark.repository_path(cluster)
     out = ROOT / step["out"]
     out.mkdir(parents=True, exist_ok=True)
 
@@ -1959,6 +1957,7 @@ def run_image(step: dict) -> str | None:
                 return f"stale {image} on {node['name']} (tree {found[:12]}) could not be removed"
             log(f"removed stale {image} from {node['name']} (tree {found[:12]}, recipe {expected[:12]})")
     builder = spark.node_by_name(nodes, step["node"])
+    repo = spark.repository_path(cluster, builder)
     if image_id(builder):
         log(f"image {image} already on {builder['name']}; not rebuilt")
     else:
@@ -1998,9 +1997,7 @@ def run_kernel_bundles(step: dict) -> list[dict]:
     captures, kept out of git) go to ~/spark-lab/inputs/<path> on the other nodes.
     """
     cluster, nodes, _ = production_configuration()
-    repo = spark.repository_path(cluster)
     run = Path(step["out"]).name
-    home = cluster["host"]["home"]
 
     def rsync(node: dict, source: Path, destination: str) -> None:
         spark.run_ssh(nodes, node, "mkdir", "-p", str(Path(destination).parent))
@@ -2012,6 +2009,8 @@ def run_kernel_bundles(step: dict) -> list[dict]:
 
     def one(entry: dict) -> dict:
         node = spark.node_by_name(nodes, entry["node"])
+        repo = spark.repository_path(cluster, node)
+        home = node.get("home", cluster["host"]["home"])
         bundle = ROOT / entry["bundle"]
         candidate = json.loads((bundle / "candidate.json").read_text())
         remote = f"{home}/spark-lab/bundles/{run}/{bundle.name}"
