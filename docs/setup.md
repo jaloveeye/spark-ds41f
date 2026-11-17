@@ -453,7 +453,12 @@ Two files describe your site and stay out of git:
   `/etc/hosts`) keeps large copies off a struggling LAN switch; the head's
   `known_hosts` must know that name. A node the head is not cabled to keeps its
   LAN route. The map-level `ssh_user` remains the default; a node's `ssh_user`
-  overrides it. The node marked `head` is operated on locally, so the head does
+  overrides it. When control traffic rides the ConnectX-7 links (`control_ip` on a
+  cable) and the nodes carry it on differently named ports, give each node a
+  `control_ifname`, the port of its `control_ip`: it replaces `GLOO_SOCKET_IFNAME`,
+  `TP_SOCKET_IFNAME` and `NCCL_SOCKET_IFNAME` on that node. Every node must reach
+  every other node's `control_ip` (Gloo connects all pairs), so a ring needs routes
+  between the nodes that are not neighbours. The node marked `head` is operated on locally, so the head does
   not need to SSH to itself.
 - **The shape.** Name your cabling once: `bin/spark site shape tp3-triangle
   --apply` (or `tp3-triangle-4k`, `tp4-ring`) writes the git-ignored

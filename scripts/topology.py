@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import ipaddress
 import json
+import re
 from pathlib import Path
 from types import ModuleType
 
@@ -35,7 +36,13 @@ VLLM_RING_ENV = {
     "VLLM_DISABLE_PYNCCL": "0",
 }
 # Node-map fields for this repository's access to a node, not the fabric.
-SITE_FIELDS = ("transfer_host", "control_ip", "ssh_user", "home", "model_cache", "repository_path")
+SITE_FIELDS = ("transfer_host", "control_ip", "control_ifname", "ssh_user", "home", "model_cache",
+               "repository_path")
+# The control-plane socket variables a node's ``control_ifname`` replaces: the interface
+# that carries its ``control_ip`` when the nodes do not share one interface name (a ring
+# whose control traffic rides the ConnectX-7 links, with no wired management port on a node).
+SOCKET_IFNAME_KEYS = ("GLOO_SOCKET_IFNAME", "TP_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME")
+IFNAME = re.compile(r"[A-Za-z0-9_.:-]{1,15}")
 GID_PINS = ("NCCL_IB_GID_INDEX", "SPARKNET_ROCE_GID_INDEX")
 
 
@@ -134,6 +141,13 @@ def node_environment(cluster: dict, node: dict) -> dict[str, str]:
     else:
         env = base
     env["VLLM_HOST_IP"] = control_ip(node)
+    ifname = node.get("control_ifname")
+    if ifname:
+        if not IFNAME.fullmatch(str(ifname)):
+            raise SystemExit(f"{node.get('name')}: control_ifname {ifname!r} is not an interface name")
+        for key in SOCKET_IFNAME_KEYS:
+            if key in env:
+                env[key] = str(ifname)
     if switched(mode):
         env["SPARK_DEPLOYMENT_TRANSPORT"] = str(mode)
     return env

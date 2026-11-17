@@ -324,6 +324,25 @@ class TopologyTest(unittest.TestCase):
         env = topology.node_environment(cand, nodes["nodes"][1])
         self.assertEqual(env["VLLM_HOST_IP"], "192.168.100.2")
 
+    def test_control_ifname_replaces_each_socket_interface_on_its_node_only(self):
+        # 2026-11-17: a ring whose head has no enP7s7 carries control traffic on the
+        # ConnectX-7 port of each node's control_ip, a different port per node.
+        nodes = copy.deepcopy(self.four)
+        nodes["nodes"][1]["control_ifname"] = "enp1s0f0np0"
+        cand = topology.candidate(self.base, nodes, "config/nodes-ring.json")
+        self.assertEqual(topology.problems(cand, nodes), [])
+        env = topology.node_environment(cand, nodes["nodes"][1])
+        other = topology.node_environment(cand, nodes["nodes"][0])
+        for key in topology.SOCKET_IFNAME_KEYS:
+            if key in other:
+                self.assertEqual(env[key], "enp1s0f0np0")
+                self.assertEqual(other[key], topology.node_environment(cand, self.four["nodes"][0])[key])
+        self.assertIn("GLOO_SOCKET_IFNAME", env)
+        self.assertNotIn("control_ifname", topology.fabric_node(nodes["nodes"][1]))
+        nodes["nodes"][1]["control_ifname"] = "eth0 ; true"
+        with self.assertRaises(SystemExit):
+            topology.node_environment(cand, nodes["nodes"][1])
+
 
     def test_two_node_switched_and_direct_topologies_are_valid(self):
         switched = spark.read_cluster("config/cluster.json", "tp3-switched")
