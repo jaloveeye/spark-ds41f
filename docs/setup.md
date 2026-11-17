@@ -480,8 +480,13 @@ mount whose source a node cannot write
 (`rw mount source is unavailable`); a mount you add that lives in the checkout
 should name `{checkout}` too. If a read-only cache is a Docker-managed NFS volume,
 set `model_cache` to its host mountpoint, such as
-`/var/lib/docker/volumes/dsv41-hf/_data`; mount and file checks use the Docker
-volume when the unprivileged SSH user cannot traverse Docker's volume directory.
+`/var/lib/docker/volumes/dsv41-hf/_data`. A source under that mountpoint is
+mounted as the volume itself (`--mount type=volume,source=dsv41-hf,target=/hub,readonly,volume-subpath=hub`),
+never as a bind: Docker mounts an NFS volume at its host mountpoint only while a
+container uses it as a volume, so a bind would see Docker's empty directory.
+`volume-subpath` needs Docker Engine 26.0 or later. The launch preflight, the GLP
+check and the engine use the same `--mount`, and `doctor --live` compares it with
+the container's `HostConfig.Mounts`.
 
 `bin/spark --cluster-config <profile> cluster sync --apply` moves every node's checkout to the head's
 commit, copies the head's node map to the others, and copies the profile's image from the head to

@@ -262,18 +262,18 @@ def remote_runtime_problems(
 def mount_test_script(cluster: dict, node: dict | None = None) -> str:
     """One remote script testing every mount source (writable for rw, readable for ro)."""
     lines = []
-    for source, _, mode in cluster["container"]["mounts"]:
+    for source, destination, mode in cluster["container"]["mounts"]:
         source = host_path(cluster, source, node)
         volume_path = docker_volume_path(source)
         if mode == "ro" and volume_path:
-            volume, below = volume_path
+            volume, _ = volume_path
             image = shlex.quote(cluster["container"]["image"])
-            check_path = shlex.quote("/cache" + (f"/{below}" if below else ""))
+            # The engine's own --mount (expected_volume_mounts), tested where the engine reads it.
             check = shlex.join([
                 "docker", "run", "--rm", "--pull=never", "--network", "none",
-                "--mount", f"type=volume,source={volume},target=/cache,readonly",
+                "--mount", volume_mount_spec(*volume_path, destination, mode),
                 "--entrypoint", "/bin/sh", cluster["container"]["image"],
-                "-c", f"test -r {check_path}",
+                "-c", f"test -r {shlex.quote(destination)}",
             ])
             lines.append(
                 f"if docker image inspect {image} >/dev/null 2>&1; then {check} || "

@@ -606,6 +606,70 @@ class LiveMountsTest(unittest.TestCase):
         )
 
 
+class DockerVolumeMountTest(unittest.TestCase):
+    """A node whose model cache is a Docker-managed NFS volume mounts it as a volume.
+
+    2026-11-17: binds of /var/lib/docker/volumes/dsv41-hf/_data/hub showed Docker's empty
+    directory (the NFS share is mounted there only while a container uses the volume), so
+    every worker failed to find the snapshot while the preflight, which mounted the volume,
+    passed."""
+
+    VOLUME_ROOT = "/var/lib/docker/volumes/dsv41-hf/_data"
+
+    def setUp(self) -> None:
+        # The recipe, whose glp block adds the second read-only file mount.
+        self.cluster = spark.read_cluster("config/cluster.json", "tp4-ring")
+        self.node = {"name": "w1", "rank": 1, "head": False, "home": "/home/ops",
+                     "management_ip": "10.0.0.2", "roce_peer_hcas": {},
+                     "model_cache": self.VOLUME_ROOT, "repository_path": "/home/ops/spark-ds41f"}
+        self.glp = spark.host_path(self.cluster, spark.cluster_recipe.glp_file(self.cluster), self.node)
+        self.below = self.glp.removeprefix(self.VOLUME_ROOT + "/")
+
+    def test_run_mounts_the_volume_paths_as_volumes_and_keeps_binds_for_the_rest(self) -> None:
+        command = spark.rendered_docker_command(self.cluster, self.node)
+        volumes = [command[i + 1] for i, flag in enumerate(command) if flag == "--volume"]
+        mounts = [command[i + 1] for i, flag in enumerate(command) if flag == "--mount"]
+        self.assertEqual(volumes, ["/home/ops/spark-ds41f/cache:/cache:rw"])
+        self.assertIn("type=volume,source=dsv41-hf,target=/hub,readonly,volume-subpath=hub", mounts)
+        self.assertIn(f"type=volume,source=dsv41-hf,target=/glp/vector.gguf,readonly,volume-subpath={self.below}",
+                      mounts)
+        self.assertFalse(any(self.VOLUME_ROOT in value for value in volumes))
+        self.assertEqual(spark.expected_binds(self.cluster, self.node), volumes)
+
+    def test_a_whole_volume_has_no_subpath(self) -> None:
+        self.assertEqual(spark.volume_mount_spec("v", "", "/x", "rw"), "type=volume,source=v,target=/x")
+
+    def test_preflight_tests_each_volume_mount_as_the_engine_mounts_it(self) -> None:
+        script = spark.mount_test_script(self.cluster, self.node)
+        for spec in spark.expected_volume_mounts(self.cluster, self.node):
+            self.assertIn(spark.shlex.quote(spec), script)
+        self.assertNotIn("target=/cache,readonly", script)
+
+    def test_live_volume_mounts_match_docker_inspect(self) -> None:
+        inspected = [
+            {"Type": "volume", "Source": "dsv41-hf", "Target": "/hub", "ReadOnly": True,
+             "VolumeOptions": {"Subpath": "hub"}},
+            {"Type": "volume", "Source": "dsv41-hf", "Target": "/glp/vector.gguf", "ReadOnly": True,
+             "VolumeOptions": {"Subpath": self.below}},
+            {"Type": "bind", "Source": "/dev/dri/by-path/x", "Target": "/dev/dri/card0"},
+        ]
+        wanted = spark.expected_volume_mounts(self.cluster, self.node)
+        self.assertEqual(spark.volume_mount_problems("w1", wanted, inspected), [])
+        writable = [dict(inspected[0], ReadOnly=False), inspected[1]]
+        self.assertEqual(
+            spark.volume_mount_problems("w1", wanted, writable),
+            ["w1: volume mount 'type=volume,source=dsv41-hf,target=/hub,volume-subpath=hub', "
+             "expected 'type=volume,source=dsv41-hf,target=/hub,readonly,volume-subpath=hub'"],
+        )
+        self.assertEqual(
+            spark.volume_mount_problems("w1", wanted, None),
+            [f"w1: missing volume mount {spec!r}" for spec in wanted],
+        )
+
+    def test_a_host_cache_has_no_volume_mounts(self) -> None:
+        self.assertEqual(spark.expected_volume_mounts(self.cluster), [])
+
+
 class CheckoutPlaceholderTest(unittest.TestCase):
     """The JIT cache mount names {checkout}: it follows deployment.path, so a site that clones
     elsewhere mounts its own cache instead of one under our path, which a start refuses as an

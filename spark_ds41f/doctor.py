@@ -1358,6 +1358,10 @@ def live_doctor(cluster: dict, nodes: dict) -> list[str]:
         problems.extend(
             mount_problems(node["name"], expected_binds(cluster, node), inspection["HostConfig"]["Binds"])
         )
+        problems.extend(
+            volume_mount_problems(node["name"], expected_volume_mounts(cluster, node),
+                                  inspection["HostConfig"].get("Mounts"))
+        )
         if configured_cpuset(cluster) is not None:
             capacities = cpu_capacities(run_ssh(
                 nodes, node, "sh", "-c", "grep -H . /sys/devices/system/cpu/cpu[0-9]*/cpu_capacity").stdout)

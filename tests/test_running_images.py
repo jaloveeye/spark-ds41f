@@ -88,6 +88,7 @@ class RunningImageTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(spark, "expected_command", return_value=["serve"]))
             stack.enter_context(mock.patch.object(spark, "expected_environment", return_value={}))
             stack.enter_context(mock.patch.object(spark, "expected_binds", return_value=[]))
+            stack.enter_context(mock.patch.object(spark, "expected_volume_mounts", return_value=[]))
             stack.enter_context(mock.patch.object(spark, "configured_cpuset", return_value=None))
             return spark.live_doctor(self.cluster, self.nodes)
 

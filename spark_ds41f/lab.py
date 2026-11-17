@@ -1898,7 +1898,7 @@ def fabric_command(cluster: dict, nodes: dict, node: dict, script: str, args: li
         kept.append(arg)
     image = kept.index(cluster["container"]["image"])
     overrides = [value for key, item in sorted(environment.items()) for value in ("--env", f"{key}={item}")]
-    mounts = [value for bind in spark.expected_binds(cluster, node) for value in ("--volume", bind)]
+    mounts = spark.mount_arguments(cluster, node)
     return (kept[:image] + overrides + mounts + kept[image:]
             + ["python3", "/fabric.py", *base[start + 2:], *args])
 

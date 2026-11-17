@@ -244,12 +244,83 @@ def expected_command(cluster: dict, node: dict) -> list[str]:
     return command
 
 
+def volume_mount_spec(volume: str, below: str, target: str, mode: str) -> str:
+    """The ``--mount`` value of a Docker named volume (or a path below its root) at ``target``.
+
+    A volume whose driver mounts remote storage (NFS) is mounted at its host mountpoint
+    only while a container uses it as a volume, so a bind of a path under that mountpoint
+    sees Docker's empty directory instead. ``volume-subpath`` (Docker Engine 26.0, API
+    1.45) mounts the path inside the volume itself."""
+    spec = f"type=volume,source={volume},target={target}"
+    if mode == "ro":
+        spec += ",readonly"
+    if below:
+        spec += f",volume-subpath={below}"
+    return spec
+
+
+def _resolved_mounts(cluster: dict, node: dict | None) -> list[tuple[str, str, str]]:
+    return [(host_path(cluster, source, node), destination, mode)
+            for source, destination, mode in cluster["container"]["mounts"]]
+
+
 def expected_binds(cluster: dict, node: dict | None = None) -> list[str]:
-    """The --volume values; docker inspect keeps them verbatim in HostConfig.Binds."""
+    """The --volume values; docker inspect keeps them verbatim in HostConfig.Binds.
+
+    A source under a Docker volume's mountpoint is a volume mount instead
+    (``expected_volume_mounts``) and is not a bind."""
     return [
-        f"{host_path(cluster, source, node)}:{destination}:{mode}"
-        for source, destination, mode in cluster["container"]["mounts"]
+        f"{source}:{destination}:{mode}"
+        for source, destination, mode in _resolved_mounts(cluster, node)
+        if not docker_volume_path(source)
     ]
+
+
+def expected_volume_mounts(cluster: dict, node: dict | None = None) -> list[str]:
+    """The --mount values of sources under a Docker volume's mountpoint (``volume_mount_spec``)."""
+    out = []
+    for source, destination, mode in _resolved_mounts(cluster, node):
+        volume_path = docker_volume_path(source)
+        if volume_path:
+            out.append(volume_mount_spec(*volume_path, destination, mode))
+    return out
+
+
+def mount_arguments(cluster: dict, node: dict | None = None) -> list[str]:
+    """The docker run arguments of the profile's mounts: ``--volume`` binds, then ``--mount``
+    volume mounts. Preflight checks and every container the recipe starts use these."""
+    return ([value for bind in expected_binds(cluster, node) for value in ("--volume", bind)]
+            + [value for spec in expected_volume_mounts(cluster, node) for value in ("--mount", spec)])
+
+
+def live_volume_mounts(actual: list[dict] | None) -> list[str]:
+    """HostConfig.Mounts entries of type volume, in ``volume_mount_spec`` form."""
+    out = []
+    for mount in actual or []:
+        if mount.get("Type") != "volume":
+            continue
+        below = (mount.get("VolumeOptions") or {}).get("Subpath") or ""
+        out.append(volume_mount_spec(mount.get("Source", ""), below.strip("/"), mount.get("Target", ""),
+                                     "ro" if mount.get("ReadOnly") else "rw"))
+    return out
+
+
+def volume_mount_problems(node_name: str, wanted: list[str], actual: list[dict] | None) -> list[str]:
+    """Extra, missing or different volume mounts (HostConfig.Mounts), matched by target."""
+    def by_target(specs: list[str]) -> dict[str, str]:
+        return {dict(part.split("=", 1) for part in spec.split(",") if "=" in part)["target"]: spec
+                for spec in specs}
+    wanted_by_path, actual_by_path = by_target(wanted), by_target(live_volume_mounts(actual))
+    problems = []
+    for path, spec in actual_by_path.items():
+        if path not in wanted_by_path:
+            problems.append(f"{node_name}: extra volume mount {spec!r}")
+        elif spec != wanted_by_path[path]:
+            problems.append(f"{node_name}: volume mount {spec!r}, expected {wanted_by_path[path]!r}")
+    for path, spec in wanted_by_path.items():
+        if path not in actual_by_path:
+            problems.append(f"{node_name}: missing volume mount {spec!r}")
+    return problems
 
 
 def mount_problems(node_name: str, wanted: list[str], actual: list[str] | None) -> list[str]:
@@ -350,8 +421,7 @@ def rendered_docker_command(cluster: dict, node: dict) -> list[str]:
     command.extend(container["docker_run_args"])
     for key, value in sorted(expected_environment(cluster, node).items()):
         command.extend(["--env", f"{key}={value}"])
-    for bind in expected_binds(cluster, node):
-        command.extend(["--volume", bind])
+    command.extend(mount_arguments(cluster, node))
     command.append(container["image"])
     command.extend(expected_command(cluster, node))
     return command
@@ -619,11 +689,11 @@ def node_glp_problems(cluster: dict, nodes: dict, node: dict) -> list[str]:
             # The image's absence is reported separately; its tools will verify the
             # NFS-backed named volume once the image has been built and distributed.
             return []
-        volume, relative = volume_path
-        container_path = "/cache" + (f"/{relative}" if relative else "")
+        # The launch mounts the file with the same volume-subpath rule (expected_volume_mounts).
+        container_path = cluster_recipe.GLP_TARGET
         result = run_ssh(
             nodes, node, "docker", "run", "--rm", "--pull=never", "--network", "none",
-            "--mount", f"type=volume,source={volume},target=/cache,readonly",
+            "--mount", volume_mount_spec(*volume_path, container_path, "ro"),
             "--entrypoint", "sha256sum", image, container_path,
         )
     if result.returncode == 255:
