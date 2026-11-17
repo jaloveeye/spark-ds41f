@@ -206,8 +206,8 @@
   },
   "deployment": {
     "launch_enabled": true,
-    "repository": "https://github.com/christopherowen/spark-ds41f.git",
-    "branch": "main",
+    "repository": "https://github.com/jaloveeye/spark-ds41f.git",
+    "branch": "site-specific-node-access",
     "path": "{home}/projects/spark-ds41f",
     "ready_url": "http://127.0.0.1:8000/v1/models",
     "ready_timeout_seconds": 3600
